@@ -623,7 +623,10 @@ class EvaluationTest(tf.test.TestCase):
     with mock.patch.object(Evaluator, "__init__", new=mock_init):
       evaluator = Evaluator()
 
-    task_metrics = {"rouge1": 50, "rouge2": 100}
+    task_metrics = {
+        "rouge1": evaluation.Scalar(50),
+        "rouge2": evaluation.Scalar(100)
+    }
     evaluator._log_fn(
         task_metrics=task_metrics, step=1, task_name="log_eval_task")
     task_summary_dir = os.path.join(summary_dir, "log_eval_task")
@@ -645,6 +648,17 @@ class EvaluationTest(tf.test.TestCase):
     self.assertEqual(tag_rouge2, "eval/rouge2")
     self.assertAlmostEqual(rouge1, 50, places=4)
     self.assertAlmostEqual(rouge2, 100, places=4)
+
+  def test_tensorboard_logging_error_on_nonscalar(self):
+    summary_dir = self.create_tempdir().full_path
+
+    writer = evaluation.TensorboardLogging(summary_dir)
+    metric = {"rouge1": 40}
+
+    with self.assertRaisesWithLiteralMatch(
+        TypeError,
+        "Value for metric 'rouge1' should be of type 'Scalar', got 'int'."):
+      writer(metric, step=10, task_name="wrong_type")
 
   def test_summary_dir_and_log_fn_provided(self):
     task_name = "summary_dir_and_log_fn_provided"

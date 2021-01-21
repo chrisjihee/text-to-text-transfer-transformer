@@ -20,6 +20,8 @@ import os
 from typing import Any, Callable, Mapping, Optional, Sequence, Tuple
 
 from absl import logging
+import dataclasses
+import numpy as np
 from t5.seqio import dataset_providers
 from t5.seqio import feature_converters
 import tensorflow.compat.v2 as tf
@@ -37,6 +39,62 @@ MetricsAndOutputsType = Tuple[
     Optional[AllMetricsType],  # metrics
     AllOutputTokensType,  # output_tokens
     AllOutputScoresType]  # output_scores
+
+
+@dataclasses.dataclass
+class Metric:
+  """A base method for the dataclasses that represent tensorboard values.
+
+  Task `metric_fn`s should output `Mapping[str, Metric]` which will be written
+  to tensorboard. `Metric` subclasses are used to dispatch to the correct
+  tensorboard writing function.
+  """
+
+
+@dataclasses.dataclass
+class Scalar(Metric):
+  """The default tensorflow value, used for creating time series graphs."""
+  value: float
+
+
+@dataclasses.dataclass
+class Text(Metric):
+  """Text to output to tensorboard, markdown is rendered by tensorboard."""
+  textdata: str
+
+
+@dataclasses.dataclass
+class Image(Metric):
+  """An image to output to tensorboard."""
+  image: np.ndarray
+
+
+@dataclasses.dataclass
+class Audio(Metric):
+  """An audio example to output to tensorboard."""
+  audiodata: np.ndarray
+  sample_rate: int = 44100
+  max_outputs: int = 3
+
+
+@dataclasses.dataclass
+class Histogram(Metric):
+  """A historgram to output to tensorboard."""
+  values: np.ndarray
+  bins: Optional[int] = None
+
+
+@dataclasses.dataclass
+class HParams(Metric):
+  """Hyperparameters to write to tensorboard."""
+  hparams: Mapping[str, Any]
+
+
+@dataclasses.dataclass
+class Tensor(Metric):
+  """A general tensor that will be written directly to tensorboard."""
+  tensor: tf.Tensor
+  metadata: Optional[Any] = None
 
 
 def get_valid_eval_tasks(tasks: Sequence[Task], split: str) -> Sequence[Task]:
@@ -137,7 +195,7 @@ class LogFnCallable(typing_extensions.Protocol):
 
   def __call__(
       self,
-      task_metrics: Mapping[str, float],
+      task_metrics: Mapping[str, Metric],
       step: int,
       task_name: str
   ) -> None: ...
@@ -441,8 +499,12 @@ class Evaluator:
               f"Duplicate metric key '{k}' in Task '{task.name}'.")
         all_metrics[task.name][k] = v
 
+      metrics = {
+          k: Scalar(v) if not isinstance(v, Metric) else v
+          for k, v in all_metrics[task.name].items()
+      }
       if self._log_fn is not None:
-        self._log_fn(all_metrics[task.name], step, task_name=task.name)
+        self._log_fn(metrics, step, task_name=task.name)
     return all_metrics
 
   @property
@@ -486,7 +548,7 @@ class TensorboardLogging:
             os.path.join(self._summary_dir, task_name))
     return self._summary_writers[task_name]
 
-  def __call__(self, task_metrics: Mapping[str, float], step: int,
+  def __call__(self, task_metrics: Mapping[str, Scalar], step: int,
                task_name: str) -> None:
     """Log the eval results and optionally write summaries for TensorBoard.
 
@@ -507,12 +569,15 @@ class TensorboardLogging:
     summary_writer = self._get_summary_writer(task_name)
 
     for metric_name, metric_value in task_metrics.items():
+      if not isinstance(metric_value, Scalar):
+        raise TypeError(f"Value for metric '{metric_name}' should be of type "
+                        f"'Scalar', got '{type(metric_value).__name__}'.")
       summary = tf.compat.v1.Summary()
 
       tag = f"eval/{metric_name}"
-      logging.info("%s at step %d: %.3f", tag, step, metric_value)
+      logging.info("%s at step %d: %.3f", tag, step, metric_value.value)
 
-      summary.value.add(tag=tag, simple_value=metric_value)
+      summary.value.add(tag=tag, simple_value=metric_value.value)
       summary_writer.add_summary(summary, step)
 
     summary_writer.flush()
